@@ -34,8 +34,11 @@ CONFIGURE_SCRIPT="${SCRIPT_DIR}/configure-jellyfin-ct.sh"
 [[ -f "$CONFIGURE_SCRIPT" ]] || { echo "ERROR: configure script not found: $CONFIGURE_SCRIPT" >&2; exit 1; }
 
 h() { echo; echo "==> $*"; }
-hhost() { ssh -o BatchMode=yes root@"$HOST" "$*"; }
-hlxc() { ssh -o BatchMode=yes root@"$LXC_IP" "$*"; }
+# accept-new: auto-trust first contact (script may run from any box, e.g. prox01
+# itself), but still fail if a known host key changes.
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+hhost() { ssh "${SSH_OPTS[@]}" root@"$HOST" "$*"; }
+hlxc() { ssh "${SSH_OPTS[@]}" root@"$LXC_IP" "$*"; }
 
 # ---------------------------------------------------------------------------
 h "1/7 Preflight"
@@ -99,7 +102,7 @@ fi
 # ---------------------------------------------------------------------------
 h "5/7 Stack + configure (pushed to and run on 109)"
 hlxc "mkdir -p /srv/data/jellyfin"
-scp -o BatchMode=yes "$CONFIGURE_SCRIPT" root@"${LXC_IP}":/srv/data/jellyfin/configure-jellyfin-ct.sh
+scp "${SSH_OPTS[@]}" "$CONFIGURE_SCRIPT" root@"${LXC_IP}":/srv/data/jellyfin/configure-jellyfin-ct.sh
 hlxc "chmod 755 /srv/data/jellyfin/configure-jellyfin-ct.sh"
 hlxc "bash /srv/data/jellyfin/configure-jellyfin-ct.sh --ip ${JELLYFIN_IP}"
 
