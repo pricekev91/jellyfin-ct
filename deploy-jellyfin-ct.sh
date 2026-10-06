@@ -11,10 +11,11 @@
 #   2) Vault rename media -> vault, library -> jellyfin/          [prox01]
 #   3) Import guard (one-time import done 2026-10-05)             [prox01]
 #   4) LXC mount mp1: vault -> /vault                             [prox01]
-#   5) Push + run configure-jellyfin-ct.sh on 109                 [109]
+#   5) Root SSH access for 109 (interactive password prompt)      [109]
+#   6) Push + run configure-jellyfin-ct.sh on 109                 [109]
 #      (stack files, bench_lan pool, image, up, port 80, verify)
-#   6) SMB [vault] share (+ retire legacy [media])                [prox01]
-#   7) Verify (http://192.168.1.16/health)                        [workstation]
+#   7) SMB [vault] share (+ retire legacy [media])                [prox01]
+#   8) Verify (http://192.168.1.16/health)                        [workstation]
 #
 # Run from prox01 (preferred — no SSH keys needed at all: host steps run
 # locally, 109 via pct exec/pct push) OR from the workstation (root+key SSH
@@ -61,7 +62,7 @@ hlxc() {
 if $ON_HOST; then echo "running on prox01 — local exec + pct (no SSH)"; else echo "running remotely — SSH to prox01 + 109"; fi
 
 # ---------------------------------------------------------------------------
-h "1/7 Preflight"
+h "1/8 Preflight"
 hhost "true"
 hlxc "true"
 hhost "pct status ${CT_ID}" | grep -q running || { echo "ERROR: LXC ${CT_ID} not running" >&2; exit 1; }
@@ -76,7 +77,7 @@ fi
 hhost "zfs list -H ${VAULT}" 2>/dev/null || hhost "zfs list -H ${MEDIA}"
 
 # ---------------------------------------------------------------------------
-h "2/7 Vault rename (media -> vault, library -> jellyfin/)"
+h "2/8 Vault rename (media -> vault, library -> jellyfin/)"
 if hhost "zfs list -H ${VAULT}" >/dev/null 2>&1; then
 	if hhost "test -d ${MOUNT}/jellyfin"; then
 		echo "dataset already renamed — skipping"
@@ -96,7 +97,7 @@ echo "library:"
 hhost "ls ${MOUNT}/jellyfin"
 
 # ---------------------------------------------------------------------------
-h "3/7 Import guard (import done 2026-10-05; re-runs only if library empty)"
+h "3/8 Import guard (import done 2026-10-05; re-runs only if library empty)"
 if hhost "test -n \"\$(ls -A ${MOUNT}/jellyfin 2>/dev/null)\""; then
 	echo "library present — skipping"
 else
@@ -106,7 +107,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-h "4/7 LXC mount (mp1 -> /vault)"
+h "4/8 LXC mount (mp1 -> /vault)"
 if hhost "grep -q '^mp1: /mnt/RaidZ1-6TB/vault,mp=/vault$' /etc/pve/lxc/${CT_ID}.conf"; then
 	hlxc "test -d /vault/jellyfin" && echo "mount ok"
 else
@@ -121,7 +122,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-h "5/7 Stack + configure (pushed to and run on 109)"
+h "5/8 Root SSH access for 109 (interactive prompt)"
+# Same sshd drop-in as hlh-ai-engine-egpu: root login with password over SSH.
+# On re-runs, just press Enter to skip.
+if [[ ! -t /dev/tty ]]; then
+	echo "no interactive tty — skipping (set later: pct exec ${CT_ID} -- passwd root)"
+else
+	read -rs -p "109 root password for SSH (empty to skip): " CT_PWD < /dev/tty
+	echo
+	if [[ -n "$CT_PWD" ]]; then
+		read -rs -p "repeat: " CT_PWD2 < /dev/tty
+		echo
+		[[ "$CT_PWD" == "$CT_PWD2" ]] || { echo "ERROR: passwords do not match" >&2; exit 1; }
+		hlxc "mkdir -p /etc/ssh/sshd_config.d && printf 'PermitRootLogin yes\nPasswordAuthentication yes\nKbdInteractiveAuthentication no\nUsePAM yes\n' > /etc/ssh/sshd_config.d/99-root-login.conf && (systemctl restart ssh || systemctl restart sshd || true)"
+		# Password flows via stdin, never argv (not visible in ps).
+		printf 'root:%s\n' "$CT_PWD" | hlxc chpasswd
+		unset CT_PWD CT_PWD2
+		echo "root password set — test: ssh root@${LXC_IP}"
+	else
+		echo "skipped (no password entered)"
+	fi
+fi
+
+h "6/8 Stack + configure (pushed to and run on 109)"
 hlxc "mkdir -p /srv/data/jellyfin"
 if $ON_HOST; then
 	pct push "${CT_ID}" "$CONFIGURE_SCRIPT" /srv/data/jellyfin/configure-jellyfin-ct.sh --perms 0755
@@ -132,7 +155,7 @@ fi
 hlxc "bash /srv/data/jellyfin/configure-jellyfin-ct.sh --ip ${JELLYFIN_IP}"
 
 # ---------------------------------------------------------------------------
-h "6/7 SMB ([vault] share on prox01)"
+h "7/8 SMB ([vault] share on prox01)"
 hhost bash -s <<'SMB'
 set -euo pipefail
 CONF=/etc/samba/smb.conf
@@ -181,7 +204,7 @@ echo "shares now:"
 hhost "testparm -s 2>/dev/null | grep -E '^\[' || true"
 
 # ---------------------------------------------------------------------------
-h "7/7 Verify (workstation side)"
+h "8/8 Verify (workstation side)"
 health=""
 for i in $(seq 1 45); do
 	health=$(curl -s -m 3 "http://${JELLYFIN_IP}/health" 2>/dev/null || true)

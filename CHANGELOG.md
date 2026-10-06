@@ -19,6 +19,14 @@
   by file count, exact byte parity, rsync size/mtime parity pass, and md5
   spot-check. `p3.raw` untouched (still the safety net, owner-retired only).
 
+### Added
+
+- **Root SSH access step (deploy step 5):** interactive hidden prompt sets the
+  LXC 109 root password — writes the same `99-root-login.conf` sshd drop-in as
+  `hlh-ai-engine-egpu` (`PermitRootLogin yes`, `PasswordAuthentication yes`),
+  sets the password via `chpasswd` over stdin (never argv). `ssh root@192.168.1.9`
+  then works from any LAN machine. Re-run: Enter skips.
+
 ### Changed
 
 - **Repo restructured to the two-script pattern** (same shape as

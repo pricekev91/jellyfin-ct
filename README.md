@@ -21,6 +21,7 @@ one for configuration. Pure bash — no `stacks/` directory, no ansible/opentofu
 
 - **DNS (done):** router (192.168.1.1) static A record `jellyfin.mizertech.net → 192.168.1.16` already in place
 - **Deploy:** `./deploy-jellyfin-ct.sh` from prox01 (preferred — no SSH keys needed) or the workstation (idempotent; on the live system it passes as no-ops)
+- **Root SSH to 109:** the deploy prompts for a 109 root password (step 5; Enter skips) — then `ssh root@192.168.1.9`. Manual alternative: `pct exec 109 -- passwd root`
 - **First-run (pending, owner):** log in at `http://jellyfin.mizertech.net/` (default admin/admin), add library roots under `/media` (Dragon Ball, GRIMM, Finding Dory, Cars 3, ...)
 - **Network:** container joins the shared macvlan pool `bench_lan` (192.168.1.0/24) at 192.168.1.16 — do not delete `bench_lan` while jellyfin/grafana are attached; container has no outbound internet (accepted, DESIGN.md §3.3)
 - **Web port:** set in `/srv/data/jellyfin/config/config/network.xml` (`<InternalHttpPort>80</InternalHttpPort>`); changing it via the UI is fine — the deploy script never overwrites a user-changed port

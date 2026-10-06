@@ -223,13 +223,20 @@ SSH to prox01 + 109). The script detects which it is.
   4. **LXC mount** [prox01] — ensure `mp1: /mnt/RaidZ1-6TB/vault,mp=/vault`;
      restart 109 **only** if the line was added (brief blip to the monitoring
      stack — expected, documented).
-  5. **Stack + configure** [109] — `scp` the configure script into
-     `/srv/data/jellyfin/` and run it there (next item).
-  6. **SMB** [prox01] — add `[vault]` (`read only = yes`, `guest ok = yes`),
+  5. **Root SSH access for 109** — interactive hidden prompt (with repeat
+     confirm) for the LXC root password. Writes the same sshd drop-in as
+     `hlh-ai-engine-egpu` (`99-root-login.conf`: `PermitRootLogin yes`,
+     `PasswordAuthentication yes`) and sets the password via `chpasswd`
+     over stdin (never argv — invisible in `ps`). Afterwards
+     `ssh root@192.168.1.9` works from anywhere on the LAN. Re-runs:
+     Enter = skip. Non-interactive (no tty): skipped with a note.
+  6. **Stack + configure** [109] — `scp` (or `pct push`) the configure script
+     into `/srv/data/jellyfin/` and run it there (next item).
+  7. **SMB** [prox01] — add `[vault]` (`read only = yes`, `guest ok = yes`),
      retire the legacy `[media]` section in the same edit (timestamped backup
      first, `testparm` validated, smbd reloaded). Laptop browses
      **`\\prox01\\vault`**.
-  7. **Verify** [workstation] — `curl http://192.168.1.16/health`.
+  8. **Verify** [workstation] — `curl http://192.168.1.16/health`.
 - **`configure-jellyfin-ct.sh`** — configuration, runs **on 109** (pushed +
   executed by deploy; also runs standalone: `./configure-jellyfin-ct.sh --ip 192.168.1.16`):
   1. **Stack files** — compose + `.env` (heredocs) → `/srv/data/jellyfin/`.
