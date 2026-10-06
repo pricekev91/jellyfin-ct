@@ -66,7 +66,8 @@ hhost "true"
 hlxc "true"
 hhost "pct status ${CT_ID}" | grep -q running || { echo "ERROR: LXC ${CT_ID} not running" >&2; exit 1; }
 echo "docker: $(hlxc 'docker info --format {{.ServerVersion}} 2>/dev/null')"
-owner=$(hhost "ip neigh ${JELLYFIN_IP} | awk '{print \$5}'" || true)
+# NB: explicit "show" — this iproute2 build rejects implicit `ip neigh <addr>` (rc 255).
+owner=$(hhost "ip -o neigh show ${JELLYFIN_IP} | head -n1" || true)
 if [[ -n "$owner" ]]; then
 	owner=$(hlxc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' jellyfin 2>/dev/null" || true)
 	[[ "$owner" == "$JELLYFIN_IP" ]] || { echo "ERROR: ${JELLYFIN_IP} is in use by something other than the jellyfin container" >&2; exit 1; }
@@ -189,7 +190,7 @@ for i in $(seq 1 45); do
 done
 [[ "$health" == *"Healthy"* ]] || { echo "ERROR: Jellyfin not healthy after 90s (last: '$health')" >&2; exit 1; }
 echo "health:       $health"
-echo "container IP: $(hhost "ip neigh ${JELLYFIN_IP}")"
+echo "container IP: $(hhost "ip -o neigh show ${JELLYFIN_IP} | head -n1")"
 echo "in-container /media:"
 hlxc "docker exec jellyfin ls /media"
 
