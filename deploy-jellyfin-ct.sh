@@ -14,10 +14,12 @@
 #   5) Push + run configure-jellyfin-ct.sh on 109                 [109]
 #      (stack files, bench_lan pool, image, up, port 80, verify)
 #   6) SMB [vault] share (+ retire legacy [media])                [prox01]
-#   7) Verify from the workstation (http://192.168.1.16/health)   [workstation]
+#   7) Verify (http://192.168.1.16/health)                        [workstation]
 #
-# Idempotent — safe to re-run (every step checks state before acting; on the
-# live system a re-run is a no-op).
+# Run from prox01 (preferred — no SSH keys needed at all: host steps run
+# locally, 109 via pct exec/pct push) OR from the workstation (root+key SSH
+# to prox01 + 109). Idempotent — safe to re-run (every step checks state
+# before acting; on the live system a re-run is a no-op).
 set -euo pipefail
 
 HOST=192.168.1.10        # prox01 (Proxmox)
@@ -34,11 +36,29 @@ CONFIGURE_SCRIPT="${SCRIPT_DIR}/configure-jellyfin-ct.sh"
 [[ -f "$CONFIGURE_SCRIPT" ]] || { echo "ERROR: configure script not found: $CONFIGURE_SCRIPT" >&2; exit 1; }
 
 h() { echo; echo "==> $*"; }
-# accept-new: auto-trust first contact (script may run from any box, e.g. prox01
-# itself), but still fail if a known host key changes.
+
+# Transport: on prox01 itself -> local exec + pct (zero keys); elsewhere -> SSH.
+ON_HOST=false
+if [[ " $(hostname -I 2>/dev/null || true) " == *" $HOST "* ]]; then
+	ON_HOST=true
+fi
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
-hhost() { ssh "${SSH_OPTS[@]}" root@"$HOST" "$*"; }
-hlxc() { ssh "${SSH_OPTS[@]}" root@"$LXC_IP" "$*"; }
+hhost() {
+	if $ON_HOST; then
+		[[ "$1" == "bash" ]] && { shift; bash "$@"; return; }
+		bash -c "$*"
+	else
+		ssh "${SSH_OPTS[@]}" root@"$HOST" "$@"
+	fi
+}
+hlxc() {
+	if $ON_HOST; then
+		pct exec "${CT_ID}" -- bash -c "$*"
+	else
+		ssh "${SSH_OPTS[@]}" root@"$LXC_IP" "$*"
+	fi
+}
+if $ON_HOST; then echo "running on prox01 — local exec + pct (no SSH)"; else echo "running remotely — SSH to prox01 + 109"; fi
 
 # ---------------------------------------------------------------------------
 h "1/7 Preflight"
@@ -102,8 +122,12 @@ fi
 # ---------------------------------------------------------------------------
 h "5/7 Stack + configure (pushed to and run on 109)"
 hlxc "mkdir -p /srv/data/jellyfin"
-scp "${SSH_OPTS[@]}" "$CONFIGURE_SCRIPT" root@"${LXC_IP}":/srv/data/jellyfin/configure-jellyfin-ct.sh
-hlxc "chmod 755 /srv/data/jellyfin/configure-jellyfin-ct.sh"
+if $ON_HOST; then
+	pct push "${CT_ID}" "$CONFIGURE_SCRIPT" /srv/data/jellyfin/configure-jellyfin-ct.sh --perms 0755
+else
+	scp "${SSH_OPTS[@]}" "$CONFIGURE_SCRIPT" root@"${LXC_IP}":/srv/data/jellyfin/configure-jellyfin-ct.sh
+	hlxc "chmod 755 /srv/data/jellyfin/configure-jellyfin-ct.sh"
+fi
 hlxc "bash /srv/data/jellyfin/configure-jellyfin-ct.sh --ip ${JELLYFIN_IP}"
 
 # ---------------------------------------------------------------------------

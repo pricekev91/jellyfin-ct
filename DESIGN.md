@@ -206,10 +206,13 @@ the owner copies the library manually (from `\\prox01\\vault` on the laptop or
 
 KISS: **two executable files, pure bash, no ansible/opentofu.** One for
 provision, one for configuration. The compose file is inlined as a heredoc in
-the configure script — there is no `stacks/` directory. Run from the
-workstation; root+key SSH to prox01 (192.168.1.10) and 109 (192.168.1.9).
+the configure script — there is no `stacks/` directory.
 
-- **`deploy-jellyfin-ct.sh`** — provisioning, host-side:
+Run from **prox01** (preferred — host-side steps run locally, 109 via
+`pct exec`/`pct push`, **zero SSH keys**) or from the workstation (root+key
+SSH to prox01 + 109). The script detects which it is.
+
+- **`deploy-jellyfin-ct.sh`** — provisioning:
   1. **Preflight** — SSH both hosts; 109 running, docker up, `192.168.1.16`
      unclaimed — or claimed *by the jellyfin container* (re-run mode).
   2. **Vault rename** [prox01] — if the dataset is still `media`: restructure

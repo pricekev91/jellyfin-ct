@@ -27,6 +27,10 @@
   on 109, pushed + executed by the deploy script). The docker-compose file and
   `.env` are inlined as heredocs in the configure script — the `stacks/`
   directory is gone. Both scripts stay idempotent.
+- **Runs keyless from prox01:** deploy auto-detects its launch point — on
+  prox01 the host-side steps run locally and 109 is reached via `pct
+  exec`/`pct push` (zero SSH keys); from anywhere else it falls back to
+  root+key SSH (with `StrictHostKeyChecking=accept-new`).
 - Web port 8096 → **80**: dedicated IP + DNS means no port in the URL
   (`http://jellyfin.mizertech.net`). Compose adds `cap_add: [NET_BIND_SERVICE]`.
   As of Jellyfin 12.x the port lives in `<configdir>/network.xml`
