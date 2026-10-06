@@ -125,13 +125,14 @@ fi
 h "5/8 Root SSH access for 109 (interactive prompt)"
 # Same sshd drop-in as hlh-ai-engine-egpu: root login with password over SSH.
 # On re-runs, just press Enter to skip.
-if [[ ! -t /dev/tty ]]; then
-	echo "no interactive tty — skipping (set later: pct exec ${CT_ID} -- passwd root)"
+# NB: -t takes an fd number (0/1/2) — "-t /dev/tty" is always false in bash.
+if [[ ! -t 0 ]]; then
+	echo "stdin is not a tty — skipping (set later: pct exec ${CT_ID} -- passwd root)"
 else
-	read -rs -p "109 root password for SSH (empty to skip): " CT_PWD < /dev/tty
+	read -rs -p "109 root password for SSH (empty to skip): " CT_PWD
 	echo
 	if [[ -n "$CT_PWD" ]]; then
-		read -rs -p "repeat: " CT_PWD2 < /dev/tty
+		read -rs -p "repeat: " CT_PWD2
 		echo
 		[[ "$CT_PWD" == "$CT_PWD2" ]] || { echo "ERROR: passwords do not match" >&2; exit 1; }
 		hlxc "mkdir -p /etc/ssh/sshd_config.d && printf 'PermitRootLogin yes\nPasswordAuthentication yes\nKbdInteractiveAuthentication no\nUsePAM yes\n' > /etc/ssh/sshd_config.d/99-root-login.conf && (systemctl restart ssh || systemctl restart sshd || true)"
