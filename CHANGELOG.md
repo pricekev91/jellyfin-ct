@@ -1,28 +1,56 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] - 2026-10-06
+
+### Added
+
+- **Deployed 2026-10-06** — Jellyfin 12.2.0 running on LXC 109 at
+  `192.168.1.16:80` (`http://jellyfin.mizertech.net`), verified end-to-end
+  (`/health` → `Healthy`, `/media` populated in-container, SMB advertises `vault`).
+  `deploy-jellyfin-ct.sh` + `stacks/jellyfin/` implemented per DESIGN.md §4; the
+  script is fully idempotent (re-run passes all 7 steps as no-ops).
+- `RaidZ1-6TB/vault` dataset: renamed from `media` (2026-10-06), library
+  restructured to `vault/jellyfin/`, mounted into 109 as `/vault` via
+  `mp1: /mnt/RaidZ1-6TB/vault,mp=/vault`.
+- SMB share `[vault]` on prox01 (`/mnt/RaidZ1-6TB/vault`, ro, guest) — the
+  laptop browses the archive at `\\prox01\\vault`.
+- One-time media import **completed 2026-10-05**: 219,034,997,158 bytes / 263 files
+  from `/mnt/p3ntfs/Users/price/Videos` to `RaidZ1-6TB/media` in ~50 min; verified
+  by file count, exact byte parity, rsync size/mtime parity pass, and md5
+  spot-check. `p3.raw` untouched (still the safety net, owner-retired only).
 
 ### Changed
 
+- **Repo restructured to the two-script pattern** (same shape as
+  `hlh-ai-engine-egpu`, KISS): `deploy-jellyfin-ct.sh` (provisioning,
+  workstation-side over SSH) + `configure-jellyfin-ct.sh` (configuration, runs
+  on 109, pushed + executed by the deploy script). The docker-compose file and
+  `.env` are inlined as heredocs in the configure script — the `stacks/`
+  directory is gone. Both scripts stay idempotent.
 - Web port 8096 → **80**: dedicated IP + DNS means no port in the URL
-  (`http://jellyfin.mizertech.net`). Compose adds `cap_add: [NET_BIND_SERVICE]`;
-  first deploy pre-seeds `<webPort>80</webPort>` in the persistent config.
+  (`http://jellyfin.mizertech.net`). Compose adds `cap_add: [NET_BIND_SERVICE]`.
+  As of Jellyfin 12.x the port lives in `<configdir>/network.xml`
+  (`JELLYFIN_CONFIG_DIR=/config/config`), **not** the legacy
+  `/config/config.xml` `<WebPort>` (verified dead in 12.x). The deploy script
+  seeds/rewrites `network.xml` with `<InternalHttpPort>80</InternalHttpPort>`
+  after first boot and restarts only if the port actually changed; a
+  user-changed port is never touched.
+- Networking: the compose stack **reuses the pre-existing macvlan pool
+  `bench_lan`** (192.168.1.0/24, parent eth0) instead of defining its own —
+  Docker rejects a second IPAM pool overlapping the same address space, and
+  `bench_lan` already carries grafana's LAN IP (192.168.1.14). Known accepted
+  limitation: `bench_lan` has no default route, so the container has no
+  outbound internet (in-container plugin auto-update logs a harmless error;
+  image updates via `docker pull` on 109 are unaffected).
 - Router DNS A record `jellyfin.mizertech.net → 192.168.1.16` is already in place
   — no longer a pending manual step.
 - `p3.raw` is now **never retired by deploy/automation** — deletion of the old NTFS
   rescue image is a manual, explicit owner action.
 - PBS4: updated and in DNS at `192.168.1.3`; the `.9` conflict with LXC 109 is
   resolved (home-lab-architecture.md and related docs updated).
-- Media dataset to be renamed `media` → `vault` at deploy (library moves under
-  `vault/jellyfin/`); SMB `\\prox01\\vault` share added; long-term archive =
+- Legacy SMB `[media]` share on `/mnt/p3ntfs` **retired** (superseded by
+  `[vault]`; pre-import source view no longer needed). Long-term archive =
   offline external drive (no PBS4 backup — media non-mission-critical, owner decision 2026-10-06).
-
-### Added
-
-- One-time media import **completed 2026-10-05**: 219,034,997,158 bytes / 263 files
-  from `/mnt/p3ntfs/Users/price/Videos` to `RaidZ1-6TB/media` in ~50 min; verified
-  by file count, exact byte parity, rsync size/mtime parity pass, and md5
-  spot-check. `p3.raw` untouched (still the safety net, owner-retired only).
 
 ## [0.1.0] - 2026-10-05
 

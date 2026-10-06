@@ -4,10 +4,10 @@ High-level design for running Jellyfin on LXC 109 (`hlh-docker`) as
 infrastructure-as-code, with all media and configuration surviving a full
 LXC nuke/rebuild.
 
-- **Status:** Media import **done 2026-10-05** (204G in `RaidZ1-6TB/media`, verified). Vault rename + Jellyfin deploy is the next session.
+- **Status:** **DEPLOYED 2026-10-06** — Jellyfin 12.2.0 running at `192.168.1.16:80` on LXC 109 (macvlan via shared pool `bench_lan`), library at `RaidZ1-6TB/vault/jellyfin` (import 2026-10-05, 204G, verified), SMB `\\prox01\\vault` serving, legacy `[media]` share retired. First-run wizard + library setup pending (manual, owner).
 - **Target:** `jellyfin.mizertech.net` = `192.168.1.16`, port `80`
 - **Repo:** `pricekev91/jellyfin-ct` (this repo)
-- **Revision 2026-10-06:** media dataset **to be renamed** `media` → `vault` (library under `vault/jellyfin/`); vault is the accessible archive (host path `/mnt/RaidZ1-6TB/vault`, SMB `\\prox01\\vault`); long-term archive = offline external drive (media is non-mission-critical, owner-managed; no PBS4 backup).
+- **Revision 2026-10-06:** media dataset renamed `media` → `vault` (library under `vault/jellyfin/`); vault is the accessible archive (host path `/mnt/RaidZ1-6TB/vault`, SMB `\\prox01\\vault`); long-term archive = offline external drive (media is non-mission-critical, owner-managed; no PBS4 backup).
 
 ---
 
@@ -43,7 +43,7 @@ LXC nuke/rebuild.
 |---------|-----------|------|-------|
 | `RaidZ1-6TB` | `/mnt/RaidZ1-6TB` | 4.07T | ~1.27T available — plenty for ~204GB media |
 | `RaidZ1-6TB/hlh-docker-data` | `/srv/data` (host) → `/srv/data` (LXC 109) | ~269M | **Quota 32 GiB** (verified). Holds docker root, grafana/prometheus state. Jellyfin config + image layers fit easily |
-| `RaidZ1-6TB/vault` (currently `media`) | `/mnt/RaidZ1-6TB/vault` (host) | 204G | **Library imported 2026-10-05** (263 files, count+size+md5 verified); no quota — renamed `media` → `vault` and library moved into `jellyfin/` at deploy. Accessible from the laptop as SMB share `\\prox01\\vault`** |
+| `RaidZ1-6TB/vault` (renamed from `media` 2026-10-06) | `/mnt/RaidZ1-6TB/vault` (host) | 204G | **Library imported 2026-10-05** (263 files, count+size+md5 verified), restructured to `vault/jellyfin/` 2026-10-06; no quota. Accessible from the laptop as SMB share `\\prox01\\vault` |
 | `RaidZ1-6TB/subvol-109-disk-0` | — | 2.44G | 109 rootfs (quota 30G) — disposable |
 | `RaidZ1-6TB/p3img` | `/mnt/RaidZ1-6TB/p3img` | ~2.5T | Rescued Windows disk: `p3.img` + `p3.raw` (NTFS) |
 
@@ -78,21 +78,21 @@ LXC nuke/rebuild.
 ```
 prox01 (Proxmox host, 192.168.1.10)
 ├── ZFS: RaidZ1-6TB
-│   ├── /vault            ← NEW: mp1 into 109 (exists as "media"; renamed at deploy)
-│   │     └── jellyfin/   ← one-time import from p3ntfs (204 GB) — the library
+│   ├── /vault            ← mp1 into 109 (renamed from "media" at deploy 2026-10-06)
+│   │     └── jellyfin/   ← import from p3ntfs (204 GB, done 2026-10-05) — the library
 │   ├── /srv/data (hlh-docker-data, quota 32G)
 │   │     ├── docker/          (docker root — images, containers metadata)
-│   │     └── jellyfin/config/ ← NEW: Jellyfin state (db, config.xml, cache)
+│   │     └── jellyfin/config/ ← Jellyfin state (db, configdir w/ network.xml, cache)
 │   └── /mnt/RaidZ1-6TB/p3img/p3.raw → /mnt/p3ntfs (ro NTFS, source only — kept indefinitely)
 │
 └── LXC 109 (hlh-docker, 192.168.1.9, unprivileged, 4c/4G)
     └── docker (rootful)
-        ├── jellyfin  ← NEW: jellyfin/jellyfin:latest
-        │    network: macvlan "jellyfin_lan" (parent eth0) → container IP 192.168.1.16/24
+        ├── jellyfin  ← jellyfin/jellyfin:latest (12.2.0 as of deploy)
+        │    network: macvlan — reuses shared pool `bench_lan` (parent eth0) → container IP 192.168.1.16/24
         │    volumes: /srv/data/jellyfin/config → /config
         │             /vault/jellyfin           → /media (ro)
         │    port **80/tcp** directly on 192.168.1.16 (no published-port indirection)
-        ├── grafana / prometheus / node-exporter / dockhand / technitium (existing, untouched)
+        ├── grafana (on bench_lan, 192.168.1.14) / prometheus / node-exporter / dockhand / technitium (existing, untouched)
 ```
 
 ### 3.2 Storage & survival (R2 — the core requirement)
@@ -125,16 +125,17 @@ the owner copies the library manually (from `\\prox01\\vault` on the laptop or
 
 ### 3.3 Networking (R3)
 
-- Compose-defined macvlan network:
+- **Reuses the pre-existing macvlan pool `bench_lan`** (macvlan, parent `eth0`,
+  subnet `192.168.1.0/24`) instead of defining its own network. Why: Docker
+  refuses a second IPAM pool overlapping the same address space (`invalid pool
+  request: Pool overlaps with other one on this address space`), and `bench_lan`
+  already carries the LAN face of grafana (`192.168.1.14`). `bench_lan` is thus
+  the shared LAN macvlan pool on 109: grafana `.14`, jellyfin `.16`.
   ```yaml
   networks:
     jellyfin_lan:
-      driver: macvlan
-      driver_opts: { parent: eth0 }
-      ipam:
-        config:
-          - subnet: 192.168.1.0/24
-            gateway: 192.168.1.1
+      external: true
+      name: bench_lan
   services:
     jellyfin:
       image: jellyfin/jellyfin:latest
@@ -149,33 +150,45 @@ the owner copies the library manually (from `\\prox01\\vault` on the laptop or
       cap_add: [NET_BIND_SERVICE]   # bind port 80 as the non-root jellyfin user
   ```
 - No `ports:` mapping — the container speaks **80** directly on `192.168.1.16`.
-- **Port 80, not Jellyfin's stock 8096:** the deploy pre-seeds `<webPort>80</webPort>`
-  into the persistent `/config/config.xml` on first run (equivalently: Web UI →
-  Dashboard → Advanced → Web port). `NET_BIND_SERVICE` lets the non-root `jellyfin`
-  user bind the privileged port.
+- **Port 80, not Jellyfin's stock 8096:** as of Jellyfin **12.x** the web port
+  lives in `<configdir>/network.xml` (`StoreKey "network"`, configdir =
+  `JELLYFIN_CONFIG_DIR` = `/config/config`) — the legacy `/config/config.xml`
+  `<WebPort>` pre-seed is **dead** in 12.x (verified: ignored, server boots on
+  8096 regardless). The deploy script handles it post-first-boot:
+  - `network.xml` missing (fresh instance, default 8096 in effect) → seed it with
+    `<InternalHttpPort>80</InternalHttpPort>` + `<PublicHttpPort>80</PublicHttpPort>` and restart;
+  - `network.xml` present with default 8096 → rewrite to 80 and restart;
+  - any other port → user-managed (e.g. set via UI) — left alone.
+  `NET_BIND_SERVICE` lets the non-root `jellyfin` user bind the privileged port.
 - **Feasibility proven:** 109 has `cap_net_admin` and a macvlan dry-test passed
   (existing `bench_lan` proves the pattern in this LXC).
 - **Constraints accepted:**
   - A macvlan container is L2-isolated from the rest of the LXC: it cannot reach
     109's own IP (192.168.1.9) or docker0 services, and vice versa. That's fine —
     Jellyfin is a standalone server here.
+  - **No outbound internet from the container:** `bench_lan` has no default
+    route, so Jellyfin's in-container plugin auto-update cannot reach
+    `repo.jellyfin.org` (logs an error, harmless). Image updates are unaffected —
+    `docker pull` runs on 109, which has internet. Accepted.
   - If the LXC is ever rebuilt with a different `eth0` (different hwaddr), the
     macvlan is recreated by the deploy script anyway — no drift.
+  - `bench_lan` must not be deleted while jellyfin (or grafana) is attached;
+    the deploy script's preflight re-checks IP ownership on re-runs.
 - **Router:** static entry `jellyfin.mizertech.net → 192.168.1.16` (manual, R5).
-  No DHCP reservation required; `.16` verified free.
+  No DHCP reservation required; `.16` verified free before deploy.
 
-### 3.4 Media migration (one-time — import done, rename pending)
+### 3.4 Media migration (one-time — DONE)
 
 - **Import: DONE 2026-10-05.** Source `/mnt/p3ntfs/Users/price/Videos` (ro NTFS
   loop mount of `p3.raw`) → `RaidZ1-6TB/media` via host-side `rsync -ah`
   (~50 min at ~220 MB/s sustained). Verified: 219,034,997,158 bytes / 263 files,
   exact byte parity, count+size+md5 spot-check. Byte-preserving, no renaming.
-- **Pending at deploy — vault rename + restructure:**
+- **Vault rename + restructure: DONE 2026-10-06** (deploy step 2):
   1. `mkdir /mnt/RaidZ1-6TB/media/jellyfin`
-  2. Move the library entries into it (same-filesystem `mv` — instant, no data copy)
-  3. `zfs rename RaidZ1-6TB/media RaidZ1-6TB/vault` (mountpoint follows to
+  2. Moved the library entries into it (same-filesystem `mv` — instant, no data copy)
+  3. `zfs rename RaidZ1-6TB/media RaidZ1-6TB/vault` (mountpoint followed to
      `/mnt/RaidZ1-6TB/vault`)
-  → library then lives at `RaidZ1-6TB/vault/jellyfin` (host path
+  → library lives at `RaidZ1-6TB/vault/jellyfin` (host path
   `/mnt/RaidZ1-6TB/vault/jellyfin`, exposed to the container as `/media` via the
   vault mount at `/vault`).
 - **`p3.raw` is never retired by this project** — deleting the NTFS rescue image
@@ -189,45 +202,57 @@ the owner copies the library manually (from `\\prox01\\vault` on the laptop or
   the 32 GiB `hlh-docker-data` quota (currently ~270 MB used) — comfortable.
   **Do not** point the media at `hlh-docker-data` (quota would explode).
 
-## 4. Deploy plan (next session — not this one)
+## 4. Deploy (two-script pattern — same shape as hlh-ai-engine-egpu)
 
-`deploy-jellyfin-ct.sh` (workstation-side, runs over SSH to prox01 + 109,
-root+key auth confirmed working for both):
+KISS: **two executable files, pure bash, no ansible/opentofu.** One for
+provision, one for configuration. The compose file is inlined as a heredoc in
+the configure script — there is no `stacks/` directory. Run from the
+workstation; root+key SSH to prox01 (192.168.1.10) and 109 (192.168.1.9).
 
-1. **Preflight** — SSH both hosts; 109 running, docker healthy,
-   `192.168.1.16` unclaimed (`ip neigh`).
-2. **Vault rename** — if the dataset is still named `media`: `mkdir
-   /mnt/RaidZ1-6TB/media/jellyfin`, `mv` the library entries into it (same-filesystem,
-   instant), then `zfs rename RaidZ1-6TB/media RaidZ1-6TB/vault`. Idempotent: skip
-   when `RaidZ1-6TB/vault/jellyfin` already holds the library.
-3. **Import** — **done 2026-10-05** (see §3.4). Guard kept for re-runs: only if
-   `/mnt/RaidZ1-6TB/vault/jellyfin` is empty and `/mnt/p3ntfs` is mounted.
-4. **LXC mount** — ensure `mp1: /mnt/RaidZ1-6TB/vault,mp=/vault` in `109.conf`;
-   `pct stop/start 109` **only if the line was added/changed** (brief blip to
-   grafana/prometheus/dockhand — expected, documented).
-5. **Stack** — write `/srv/data/jellyfin/` (compose file + `.env`), `docker compose up -d`.
-6. **SMB** — add a `[vault]` share in `/etc/samba/smb.conf` pointing at
-   `/mnt/RaidZ1-6TB/vault` (`read only = yes`, `guest ok = yes` — same posture as
-   the existing `[media]` share on `/mnt/p3ntfs`); reload smbd. The laptop then
-   browses the archive at **`\\prox01\\vault`**. (Samba is already installed and
-   active on prox01; the legacy `[media]` share on `/mnt/p3ntfs` — the pre-import
-   source view — can be retired in the same edit once `\\prox01\\vault` is confirmed working.)
-7. **Verify** — `curl http://192.168.1.16/health` (or `/web/` 200), confirm
-   container IP from the workstation, confirm `/media` visible + readable in-container,
-   log first-boot admin credentials to the runbook (default `admin/admin`, user changes on first login).
-8. **Handoff** — router static DNS entry is **already in place**; first-run library setup:
-   add Movies/TV roots under `/media` (dirs listed in §2).
+- **`deploy-jellyfin-ct.sh`** — provisioning, host-side:
+  1. **Preflight** — SSH both hosts; 109 running, docker up, `192.168.1.16`
+     unclaimed — or claimed *by the jellyfin container* (re-run mode).
+  2. **Vault rename** [prox01] — if the dataset is still `media`: restructure
+     the library into `jellyfin/`, then `zfs rename` (same-filesystem, instant).
+     Idempotent: skip when `RaidZ1-6TB/vault/jellyfin` holds the library.
+  3. **Import guard** [prox01] — only if the library is empty **and** `/mnt/p3ntfs`
+     is mounted (the import itself is done 2026-10-05 — §3.4).
+  4. **LXC mount** [prox01] — ensure `mp1: /mnt/RaidZ1-6TB/vault,mp=/vault`;
+     restart 109 **only** if the line was added (brief blip to the monitoring
+     stack — expected, documented).
+  5. **Stack + configure** [109] — `scp` the configure script into
+     `/srv/data/jellyfin/` and run it there (next item).
+  6. **SMB** [prox01] — add `[vault]` (`read only = yes`, `guest ok = yes`),
+     retire the legacy `[media]` section in the same edit (timestamped backup
+     first, `testparm` validated, smbd reloaded). Laptop browses
+     **`\\prox01\\vault`**.
+  7. **Verify** [workstation] — `curl http://192.168.1.16/health`.
+- **`configure-jellyfin-ct.sh`** — configuration, runs **on 109** (pushed +
+  executed by deploy; also runs standalone: `./configure-jellyfin-ct.sh --ip 192.168.1.16`):
+  1. **Stack files** — compose + `.env` (heredocs) → `/srv/data/jellyfin/`.
+  2. **Up** — `bench_lan` macvlan pool (create only if missing), image
+     (pull only if missing), `docker compose up -d`.
+  3. **Port 80** — via `network.xml` (§3.3): seed when missing, rewrite the
+     stock 8096, never touch a user-changed port; restart only when changed.
+  4. **Verify** — in-container health on 80, container IP, `/media` listing.
 
-Repo layout (planned):
+Both scripts are idempotent (every step checks state before acting) — a
+re-run on the live system is a no-op. Live state as of 2026-10-06:
+`/health` → `Healthy` at `192.168.1.16:80`, `/media` populated, SMB
+advertises `vault` only.
+
+**Remaining manual step (owner):** open `http://jellyfin.mizertech.net/`
+(first-run wizard, default `admin/admin`), then add library roots under
+`/media` (dirs listed in §2).
+
+Repo layout:
 
 ```
 jellyfin-ct/
 ├── DESIGN.md                     # this file
 ├── README.md                     # quickstart + runbook (DNS, first-run, import status)
-├── deploy-jellyfin-ct.sh         # the idempotent deploy (section 4)
-├── stacks/jellyfin/
-│   ├── docker-compose.yml
-│   └── .env
+├── deploy-jellyfin-ct.sh         # 1/2 — provisioning (workstation)
+├── configure-jellyfin-ct.sh      # 2/2 — configuration (on 109, pushed by deploy)
 └── CHANGELOG.md
 ```
 
