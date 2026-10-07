@@ -264,8 +264,10 @@ SSH to prox01 + 109). The script detects which it is.
      missing), `docker compose up -d`.
   3. **Port 80** — via `network.xml` (§3.3): seed when missing, rewrite the
      stock 8096, never touch a user-changed port; restart only when changed.
-  4. **Verify** — in-container health on 80, container IP, **outbound egress**
-     (HTTP 2xx/3xx from `https://1.1.1.1`), `/media` listing.
+  4. **Verify** — in-container health on 80 (polled until Healthy, up to 10
+     min — the StartupCheck reports Degraded while the server is still
+     starting), container IP, **outbound egress** (HTTP 2xx/3xx from
+     `https://1.1.1.1`), `/media` listing.
 
 Both scripts are idempotent (every step checks state before acting) — a
 re-run on the live system is a no-op. Live state as of 2026-10-07:

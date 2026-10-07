@@ -42,13 +42,18 @@ CFG="$STK/config"               # jellyfin state (configdir /config) — survive
 NETXML="$CFG/config/network.xml"
 
 wait_health() {
-	# $1 = expected health string; polls in-container curl on port 80
-	local i
-	for i in $(seq 1 45); do
-		local h
+	# $1 = expected health string; polls in-container curl on port 80.
+	# The web server answers BEFORE startup is complete: the "StartupCheck"
+	# then reports "Server is still starting up." as Degraded for several
+	# minutes (library scan / queued refreshes) — so poll, never one-shot.
+	local i h
+	for i in $(seq 1 300); do
 		h=$(docker exec jellyfin curl -fsS -m 2 http://localhost:80/health 2>/dev/null || true)
 		if [[ "$h" == *"$1"* ]]; then
 			return 0
+		fi
+		if (( i % 30 == 0 )); then
+			echo "... waiting for '$1' ($((i * 2))s) — last: ${h:-<no response>}"
 		fi
 		sleep 2
 	done
@@ -132,19 +137,24 @@ if [[ ! -f "$NETXML" ]]; then
 </NetworkConfiguration>
 XML
 	docker restart jellyfin
-	wait_health Healthy
+	wait_health Healthy || { echo "ERROR: not Healthy after restart" >&2; exit 1; }
 elif grep -q '<InternalHttpPort>8096</InternalHttpPort>' "$NETXML"; then
 	echo "network.xml at default 8096 — rewriting to 80"
 	sed -i 's|<InternalHttpPort>8096</InternalHttpPort>|<InternalHttpPort>80</InternalHttpPort>|; s|<PublicHttpPort>8096</PublicHttpPort>|<PublicHttpPort>80</PublicHttpPort>|' "$NETXML"
 	docker restart jellyfin
-	wait_health Healthy
+	wait_health Healthy || { echo "ERROR: not Healthy after restart" >&2; exit 1; }
 else
 	echo "network.xml has a non-default port — user-managed, leaving alone"
 fi
 
 echo "==> 4/4 Verify"
-health=$(docker exec jellyfin curl -fsS -m 5 http://localhost:80/health)
-[[ "$health" == *"Healthy"* ]] || { echo "ERROR: expected Healthy, got: $health" >&2; exit 1; }
+if ! wait_health Healthy; then
+	health=$(docker exec jellyfin curl -fsS -m 5 http://localhost:80/health 2>/dev/null || true)
+	echo "ERROR: did not reach Healthy (last: ${health:-<no response>}) — log tail:" >&2
+	docker exec jellyfin sh -c 'tail -n 25 "$(ls -t /config/log/log_*.log | head -1)"' >&2 || true
+	exit 1
+fi
+health=Healthy
 ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' jellyfin)
 [[ "$ip" == "$JELLYFIN_IP" ]] || { echo "ERROR: container IP $ip != $JELLYFIN_IP" >&2; exit 1; }
 # Outbound egress is load-bearing (remote metadata) — verify it, don't assume it.

@@ -29,6 +29,12 @@
   jellyfin container on that IP **or** a live ping reply; stale entries are
   flushed (`ip neigh flush to <ip>/32` — this iproute2 build rejects
   `flush host <ip>`).
+- **Health gate now polls instead of one-shotting.** `/health` reports
+  `Degraded` ("StartupCheck — Server is still starting up.") for several
+  minutes after boot even though the web server already answers, so the old
+  one-shot check at step 4 failed a fresh deploy seconds after startup.
+  Step 4 (and the step-3 restart branches) now poll `wait_health` for up to
+  10 minutes with progress output and a log tail on timeout.
 
 ### Note (manual, owner)
 
