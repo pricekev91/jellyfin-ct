@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.0] - 2026-10-07
+
+### Changed
+
+- **Network: `bench_lan` → `direct_lan`, with outbound internet.** The
+  macvlan pool is now `direct_lan`, created by the configure script with
+  `--gateway 192.168.1.1`. The explicit gateway is what installs the
+  container's default route — restoring **all remote metadata fetching**
+  (TheTVDb/TMDb/OMDb/MusicBrainz). Root cause of the missing show/episode
+  metadata: the old gateway-less `bench_lan` had no default route, so every
+  provider call died with `ENETUNREACH` while import/playback (local disk)
+  kept working. `bench_lan` retired 2026-10-07 (Docker refuses two IPAM pools
+  on one subnet — the old network had to be deleted first).
+- `configure-jellyfin-ct.sh`: creates `direct_lan` (hard error with migration
+  instructions if legacy `bench_lan` still exists); verify step now asserts
+  outbound egress from the container (HTTP 2xx/3xx from `https://1.1.1.1`).
+- DESIGN.md §3.3 rewritten (gateway rationale, migration note, grafana
+  re-attach step); README network line updated.
+
+### Note (manual, owner)
+
+- After re-deploy: trigger a metadata refresh in Jellyfin (Dashboard →
+  Library → *Shows* → **Refresh metadata**) to backfill descriptions,
+  episode titles, and artwork.
+- Grafana's `.14` LAN face needs re-attach: `docker network connect
+  --ip 192.168.1.14 direct_lan grafana` (or re-run its deploy, which
+  auto-reuses any macvlan on the subnet).
+
 ## [0.2.0] - 2026-10-06
 
 ### Added

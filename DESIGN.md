@@ -4,7 +4,7 @@ High-level design for running Jellyfin on LXC 109 (`hlh-docker`) as
 infrastructure-as-code, with all media and configuration surviving a full
 LXC nuke/rebuild.
 
-- **Status:** **DEPLOYED 2026-10-06** — Jellyfin 12.2.0 running at `192.168.1.16:80` on LXC 109 (macvlan via shared pool `bench_lan`), library at `RaidZ1-6TB/vault/jellyfin` (import 2026-10-05, 204G, verified), SMB `\\prox01\\vault` serving, legacy `[media]` share retired. First-run wizard + library setup pending (manual, owner).
+- **Status:** **DEPLOYED 2026-10-06, network migrated to `direct_lan` 2026-10-07** — Jellyfin 12.2.0 at `192.168.1.16:80` on LXC 109 (macvlan `direct_lan` with gateway → outbound internet for metadata), library at `RaidZ1-6TB/vault/jellyfin` (import 2026-10-05, 204G, verified), SMB `\\prox01\\vault` serving, legacy `[media]` share retired. First-run wizard + library setup pending (manual, owner).
 - **Target:** `jellyfin.mizertech.net` = `192.168.1.16`, port `80`
 - **Repo:** `pricekev91/jellyfin-ct` (this repo)
 - **Revision 2026-10-06:** media dataset renamed `media` → `vault` (library under `vault/jellyfin/`); vault is the accessible archive (host path `/mnt/RaidZ1-6TB/vault`, SMB `\\prox01\\vault`); long-term archive = offline external drive (media is non-mission-critical, owner-managed; no PBS4 backup).
@@ -34,7 +34,7 @@ LXC nuke/rebuild.
 - Effective capabilities **include `cap_net_admin`** (verified in-container via `/proc/self/status`) and a live `ip link add ... type macvlan` dry-test **succeeded**. The macvlan approach (R3) works in this unprivileged LXC.
 - Docker: rootful `dockerd` (root), Server 29.8.1, Compose v5.5.1, storage driver `overlayfs`, **Docker Root Dir `/srv/data/docker`** (i.e. inside the surviving dataset — see below).
 - `jellyfin/jellyfin:latest` manifest resolves from 109 (pull path is open).
-- Existing macvlan precedent: network `bench_lan` (macvlan, parent `eth0`, subnet `192.168.1.0/24`).
+- Existing macvlan precedent: network `bench_lan` (macvlan, parent `eth0`, subnet `192.168.1.0/24`) — retired 2026-10-07, replaced by `direct_lan` (same params + `--gateway 192.168.1.1`, see §3.3).
 - `net0` has **no** `firewall=1`, so no Proxmox firewall rules block 80. (If a PVE firewall is ever enabled, allow 80/tcp on 109.)
 
 ### Storage (prox01 ZFS)
@@ -88,11 +88,11 @@ prox01 (Proxmox host, 192.168.1.10)
 └── LXC 109 (hlh-docker, 192.168.1.9, unprivileged, 4c/4G)
     └── docker (rootful)
         ├── jellyfin  ← jellyfin/jellyfin:latest (12.2.0 as of deploy)
-        │    network: macvlan — reuses shared pool `bench_lan` (parent eth0) → container IP 192.168.1.16/24
+        │    network: macvlan `direct_lan` (parent eth0, gw 192.168.1.1 → outbound internet) → container IP 192.168.1.16/24
         │    volumes: /srv/data/jellyfin/config → /config
         │             /vault/jellyfin           → /media (ro)
         │    port **80/tcp** directly on 192.168.1.16 (no published-port indirection)
-        ├── grafana (on bench_lan, 192.168.1.14) / prometheus / node-exporter / dockhand / technitium (existing, untouched)
+        ├── grafana (direct_lan, 192.168.1.14) / prometheus / node-exporter / dockhand / technitium (existing; grafana detached during the 2026-10-07 migration — re-attach per §3.3)
 ```
 
 ### 3.2 Storage & survival (R2 — the core requirement)
@@ -125,17 +125,26 @@ the owner copies the library manually (from `\\prox01\\vault` on the laptop or
 
 ### 3.3 Networking (R3)
 
-- **Reuses the pre-existing macvlan pool `bench_lan`** (macvlan, parent `eth0`,
-  subnet `192.168.1.0/24`) instead of defining its own network. Why: Docker
-  refuses a second IPAM pool overlapping the same address space (`invalid pool
-  request: Pool overlaps with other one on this address space`), and `bench_lan`
-  already carries the LAN face of grafana (`192.168.1.14`). `bench_lan` is thus
-  the shared LAN macvlan pool on 109: grafana `.14`, jellyfin `.16`.
+- **Own macvlan pool `direct_lan`** (macvlan, parent `eth0`, subnet
+  `192.168.1.0/24`, **`--gateway 192.168.1.1`**), created by
+  `configure-jellyfin-ct.sh` if missing. The explicit gateway is the point:
+  Docker installs the default route from it, so the container has **full
+  outbound internet** (metadata providers TheTVDb/TMDb/OMDb/MusicBrainz,
+  plugin repo). Verified 2026-10-07 with a throwaway container: `default via
+  192.168.1.1` present, egress works.
+  - **Why it exists (2026-10-07 migration):** the pool was previously the shared
+    `bench_lan` — same params, **no gateway** → no default route → *every*
+    metadata fetch failed with `ENETUNREACH` while import/playback (local disk)
+    kept working: shows appeared with no descriptions, episode titles, or
+    artwork. Docker refuses a second IPAM pool on the same subnet (`Pool
+    overlaps with other one on this address space`), so `bench_lan` had to be
+    deleted before `direct_lan` could be created; both endpoints (jellyfin
+    `.16`, grafana `.14`) moved over.
   ```yaml
   networks:
     jellyfin_lan:
       external: true
-      name: bench_lan
+      name: direct_lan
   services:
     jellyfin:
       image: jellyfin/jellyfin:latest
@@ -161,19 +170,25 @@ the owner copies the library manually (from `\\prox01\\vault` on the laptop or
   - any other port → user-managed (e.g. set via UI) — left alone.
   `NET_BIND_SERVICE` lets the non-root `jellyfin` user bind the privileged port.
 - **Feasibility proven:** 109 has `cap_net_admin` and a macvlan dry-test passed
-  (existing `bench_lan` proves the pattern in this LXC).
+  (`bench_lan` proved the pattern in this LXC).
 - **Constraints accepted:**
   - A macvlan container is L2-isolated from the rest of the LXC: it cannot reach
     109's own IP (192.168.1.9) or docker0 services, and vice versa. That's fine —
-    Jellyfin is a standalone server here.
-  - **No outbound internet from the container:** `bench_lan` has no default
-    route, so Jellyfin's in-container plugin auto-update cannot reach
-    `repo.jellyfin.org` (logs an error, harmless). Image updates are unaffected —
-    `docker pull` runs on 109, which has internet. Accepted.
+    Jellyfin is a standalone server here. (Outbound egress still works: it exits
+    via the router, not via 109.)
+  - Outbound traffic sources as `192.168.1.16` (plain NAT router — no issue).
+    Egress is **verified at every deploy** (configure step 4 curls
+    `https://1.1.1.1` from inside the container) because remote metadata is
+    load-bearing for the library experience.
   - If the LXC is ever rebuilt with a different `eth0` (different hwaddr), the
     macvlan is recreated by the deploy script anyway — no drift.
-  - `bench_lan` must not be deleted while jellyfin (or grafana) is attached;
+  - `direct_lan` must not be deleted while jellyfin (or grafana) is attached;
     the deploy script's preflight re-checks IP ownership on re-runs.
+  - **Grafana re-attach (manual, owner):** the 2026-10-07 migration detached
+    grafana from the old pool; its `.14` LAN face is restored with
+    `docker network connect --ip 192.168.1.14 direct_lan grafana` (or a re-run
+    of the grafana deploy, which auto-reuses any macvlan on the subnet; its
+    `.env` still says `MACVLAN_NAME=bench_lan`).
 - **Router:** static entry `jellyfin.mizertech.net → 192.168.1.16` (manual, R5).
   No DHCP reservation required; `.16` verified free before deploy.
 
@@ -240,16 +255,19 @@ SSH to prox01 + 109). The script detects which it is.
 - **`configure-jellyfin-ct.sh`** — configuration, runs **on 109** (pushed +
   executed by deploy; also runs standalone: `./configure-jellyfin-ct.sh --ip 192.168.1.16`):
   1. **Stack files** — compose + `.env` (heredocs) → `/srv/data/jellyfin/`.
-  2. **Up** — `bench_lan` macvlan pool (create only if missing), image
-     (pull only if missing), `docker compose up -d`.
+  2. **Up** — `direct_lan` macvlan (create only if missing, with gateway;
+     hard error if legacy `bench_lan` still exists), image (pull only if
+     missing), `docker compose up -d`.
   3. **Port 80** — via `network.xml` (§3.3): seed when missing, rewrite the
      stock 8096, never touch a user-changed port; restart only when changed.
-  4. **Verify** — in-container health on 80, container IP, `/media` listing.
+  4. **Verify** — in-container health on 80, container IP, **outbound egress**
+     (HTTP 2xx/3xx from `https://1.1.1.1`), `/media` listing.
 
 Both scripts are idempotent (every step checks state before acting) — a
-re-run on the live system is a no-op. Live state as of 2026-10-06:
-`/health` → `Healthy` at `192.168.1.16:80`, `/media` populated, SMB
-advertises `vault` only.
+re-run on the live system is a no-op. Live state as of 2026-10-07:
+`direct_lan` in place (gateway 192.168.1.1); jellyfin detached, awaiting this
+re-deploy; grafana detached, pending manual re-attach (§3.3); SMB advertises
+`vault` only.
 
 **Remaining manual step (owner):** open `http://jellyfin.mizertech.net/`
 (first-run wizard, default `admin/admin`), then add library roots under

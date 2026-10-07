@@ -13,7 +13,7 @@
 #   4) LXC mount mp1: vault -> /vault                             [prox01]
 #   5) Root SSH access for 109 (interactive password prompt)      [109]
 #   6) Push + run configure-jellyfin-ct.sh on 109                 [109]
-#      (stack files, bench_lan pool, image, up, port 80, verify)
+#      (stack files, direct_lan macvlan, image, up, port 80, verify + egress)
 #   7) SMB [vault] share (+ retire legacy [media])                [prox01]
 #   8) Verify (http://192.168.1.16/health)                        [workstation]
 #

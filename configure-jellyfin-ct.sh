@@ -9,7 +9,7 @@
 #
 # Steps:
 #   1) Stack files (compose + .env, heredoc — /srv/data/jellyfin)
-#   2) bench_lan macvlan pool (create if missing) + image + `up -d`
+#   2) direct_lan macvlan (create if missing, with gateway) + image + `up -d`
 #   3) Web port 80 via Jellyfin 12.x network.xml (first-boot fix)
 #   4) Verify (health + /media visible in container)
 #
@@ -60,13 +60,14 @@ mkdir -p "$STK"
 cat > "$STK/docker-compose.yml" <<'COMPOSE'
 # Jellyfin — deployed by deploy-jellyfin-ct.sh (see DESIGN.md §3.3)
 #
-# Networking: macvlan via the shared pool `bench_lan` (macvlan, parent eth0,
-# 192.168.1.0/24) — the same LAN pool grafana rides on. A second IPAM pool over
-# the same subnet is refused by Docker ("Pool overlaps with other one"), so the
-# pre-existing network is reused: jellyfin takes 192.168.1.16 from it.
+# Networking: macvlan `direct_lan` (parent eth0, 192.168.1.0/24,
+# --gateway 192.168.1.1) — the container owns 192.168.1.16 directly on the LAN.
+# The explicit --gateway installs a default route, so the container HAS full
+# outbound internet (metadata: TheTVDb/TMDb/OMDb/MusicBrainz, plugin repo).
+# (The retired `bench_lan` had no gateway → no default route → every metadata
+# fetch died with ENETUNREACH. See DESIGN.md §3.3.)
 # No `ports:` — the container serves port 80 directly on 192.168.1.16
-# (jellyfin.mizertech.net; no port in the URL). No outbound internet from the
-# container (bench_lan has no default route — accepted, see DESIGN.md §3.3).
+# (jellyfin.mizertech.net; no port in the URL).
 #
 # Storage: /config  = /srv/data/jellyfin/config  (host ZFS, survives nuke)
 #          /media   = /vault/jellyfin           (RaidZ1-6TB/vault, read-only)
@@ -89,15 +90,21 @@ services:
 networks:
   jellyfin_lan:
     external: true
-    name: bench_lan
+    name: direct_lan
 COMPOSE
 cat > "$STK/.env" <<ENV
 JELLYFIN_IP=${JELLYFIN_IP}
 ENV
 
-echo "==> 2/4 bench_lan + image + up"
-docker network inspect bench_lan >/dev/null 2>&1 || \
-	docker network create -d macvlan --opt parent=eth0 --subnet 192.168.1.0/24 bench_lan
+echo "==> 2/4 direct_lan + image + up"
+if ! docker network inspect direct_lan >/dev/null 2>&1; then
+	if docker network inspect bench_lan >/dev/null 2>&1; then
+		echo "ERROR: legacy bench_lan still exists — Docker refuses a second IPAM pool on 192.168.1.0/24." >&2
+		echo "       Detach its containers, 'docker network rm bench_lan', then re-run." >&2
+		exit 1
+	fi
+	docker network create -d macvlan --opt parent=eth0 --subnet 192.168.1.0/24 --gateway 192.168.1.1 direct_lan
+fi
 docker image inspect jellyfin/jellyfin:latest >/dev/null 2>&1 || \
 	docker compose -f "$STK/docker-compose.yml" pull
 docker compose -f "$STK/docker-compose.yml" up -d
@@ -140,8 +147,12 @@ health=$(docker exec jellyfin curl -fsS -m 5 http://localhost:80/health)
 [[ "$health" == *"Healthy"* ]] || { echo "ERROR: expected Healthy, got: $health" >&2; exit 1; }
 ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' jellyfin)
 [[ "$ip" == "$JELLYFIN_IP" ]] || { echo "ERROR: container IP $ip != $JELLYFIN_IP" >&2; exit 1; }
+# Outbound egress is load-bearing (remote metadata) — verify it, don't assume it.
+egress=$(docker exec jellyfin curl -fsS -m 8 -o /dev/null -w '%{http_code}' https://1.1.1.1/ 2>/dev/null || true)
+[[ "$egress" =~ ^[23] ]] || { echo "ERROR: no outbound internet from container (https://1.1.1.1 → '$egress') — check direct_lan gateway" >&2; exit 1; }
 echo "health: $health (in-container, port 80)"
 echo "container IP: $ip"
+echo "outbound egress: HTTP $egress (https://1.1.1.1)"
 echo "/media (vault/jellyfin):"
 docker exec jellyfin ls /media
 echo "configure: OK"
