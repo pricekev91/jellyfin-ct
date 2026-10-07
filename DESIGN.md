@@ -230,6 +230,10 @@ SSH to prox01 + 109). The script detects which it is.
 - **`deploy-jellyfin-ct.sh`** — provisioning:
   1. **Preflight** — SSH both hosts; 109 running, docker up, `192.168.1.16`
      unclaimed — or claimed *by the jellyfin container* (re-run mode).
+     "Claimed" means a live jellyfin container on that IP **or** a live ping
+     reply; stale kernel ARP entries (e.g. `FAILED` probe state left after a
+     container removal) are flushed, not treated as ownership (bug fixed
+     2026-10-07).
   2. **Vault rename** [prox01] — if the dataset is still `media`: restructure
      the library into `jellyfin/`, then `zfs rename` (same-filesystem, instant).
      Idempotent: skip when `RaidZ1-6TB/vault/jellyfin` holds the library.

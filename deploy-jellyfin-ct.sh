@@ -68,11 +68,20 @@ hlxc "true"
 hhost "pct status ${CT_ID}" | grep -q running || { echo "ERROR: LXC ${CT_ID} not running" >&2; exit 1; }
 echo "docker: $(hlxc 'docker info --format {{.ServerVersion}} 2>/dev/null')"
 # NB: explicit "show" — this iproute2 build rejects implicit `ip neigh <addr>` (rc 255).
-owner=$(hhost "ip -o neigh show ${JELLYFIN_IP} | head -n1" || true)
-if [[ -n "$owner" ]]; then
-	owner=$(hlxc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' jellyfin 2>/dev/null" || true)
-	[[ "$owner" == "$JELLYFIN_IP" ]] || { echo "ERROR: ${JELLYFIN_IP} is in use by something other than the jellyfin container" >&2; exit 1; }
+# A neighbor-table entry alone does NOT prove the IP is taken: after the container
+# is removed the kernel keeps FAILED/stale probe entries (observed 2026-10-07 —
+# "192.168.1.16 dev vmbr0 FAILED" blocked a fresh deploy). Live ownership is
+# judged by (a) a live jellyfin container owning the IP, or (b) a live ping reply.
+if [[ "$(hlxc "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' jellyfin 2>/dev/null" || true)" == "$JELLYFIN_IP" ]]; then
 	echo "${JELLYFIN_IP} already in use by the jellyfin container — re-run mode"
+elif hhost "ping -c1 -W1 ${JELLYFIN_IP}" >/dev/null 2>&1; then
+	hhost "ip -o neigh show ${JELLYFIN_IP} | head -n1" || true
+	echo "ERROR: ${JELLYFIN_IP} answers ping but is not the jellyfin container" >&2
+	exit 1
+else
+	# Free — flush any stale/FAILED probe entry for hygiene. ("flush to <ip>/32"
+	# — this iproute2 build rejects "flush host <ip>".)
+	hhost "ip neigh flush to ${JELLYFIN_IP}/32" >/dev/null 2>&1 || true
 fi
 hhost "zfs list -H ${VAULT}" 2>/dev/null || hhost "zfs list -H ${MEDIA}"
 

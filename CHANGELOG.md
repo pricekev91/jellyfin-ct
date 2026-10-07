@@ -19,6 +19,17 @@
 - DESIGN.md §3.3 rewritten (gateway rationale, migration note, grafana
   re-attach step); README network line updated.
 
+### Fixed
+
+- **Preflight no longer trips on stale ARP entries.** After the container is
+  removed the kernel keeps a `FAILED` probe entry for `192.168.1.16`, and the
+  old check (neighbor entry present + no live jellyfin container) aborted
+  fresh deploys with "in use by something other than the jellyfin container"
+  even though nothing answered the IP. Ownership is now judged by a live
+  jellyfin container on that IP **or** a live ping reply; stale entries are
+  flushed (`ip neigh flush to <ip>/32` — this iproute2 build rejects
+  `flush host <ip>`).
+
 ### Note (manual, owner)
 
 - After re-deploy: trigger a metadata refresh in Jellyfin (Dashboard →
